@@ -16,6 +16,9 @@ notebooks/.coverage
 *.h5
 *.pth
 *.onnx
+*.gguf
+
+
 
 # Distribution / packaging
 .Python

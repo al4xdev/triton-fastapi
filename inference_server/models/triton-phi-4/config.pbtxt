@@ -1,0 +1,20 @@
+name: "phi-4-reasoning"
+backend: "python"
+max_batch_size: 1
+
+input [{
+  name: "prompt"
+  data_type: TYPE_STRING
+  dims: [-1]
+}]
+
+output [{
+  name: "response"
+  data_type: TYPE_STRING
+  dims: [-1]
+}]
+
+parameters: {
+  key: "EXECUTABLE_PATH",
+  value: {string_value: "/usr/local/bin/python3"}
+}
