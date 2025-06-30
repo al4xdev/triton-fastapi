@@ -1,0 +1,16 @@
+[project]
+name = "FastKoboldProxy"
+version = "0.1.0"
+description = "KoboldProxy is a lightweight middleware for AI model serving, bridging external HTTPS clients with Triton Inference Server via FastAPI. Features include basic authentication, DuckDB integration (with Pub/Sub connectivity), and gRPC communication with containerized Triton instances. Designed for seamless OpenAI-like API compatibility with Kobold.cpp or similar LLM backends."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "duckdb>=1.3.1",
+    "fastapi>=0.115.14",
+    "numpy>=2.3.1",
+    "pydantic>=2.11.7",
+    "tritonclient>=2.58.0",
+    "uvicorn>=0.34.3",
+]
+
+
