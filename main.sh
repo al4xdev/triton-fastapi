@@ -14,7 +14,8 @@ sudo usermod -aG docker $USER && newgrp docker
 
 sudo systemctl enable --now docker
 
-docker pull nvcr.io/nvidia/tritonserver:25.06-trtllm-python-py3
+docker pull vllm/vllm-openai:latest # Use a generic vLLM OpenAI image
+# Or build your own vLLM image if required
 
 
 # model
@@ -26,9 +27,9 @@ graph TB
 # model
 
 docker run --rm -p 8000:8000 -p 8001:8001 -p 8002:8002 \
-    -v $TRITON_FASTAPI_ROOT/inference_server/models:/models \
-    nvcr.io/nvidia/tritonserver:23.07-py3 \
-    tritonserver --model-repository=/models
+    vllm/vllm-openai:latest \
+    python -m vllm.entrypoints.api_server --host 0.0.0.0 --port 8000 --model YOUR_MODEL_NAME --download-dir /models # Example vLLM command
+    # Replace YOUR_MODEL_NAME with the actual model you want to serve
 
 
 

@@ -5,7 +5,7 @@ from datetime import datetime
 class ErrorLog(BaseModel):
     erro_id: int
     project_id: Optional[str]
-    triton_log: Optional[str]
+    inference_log: Optional[str]
     middleware_log: Optional[str]
     timestamp: datetime
 

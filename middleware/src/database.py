@@ -36,7 +36,7 @@ def init_db():
         SELECT
             erro_id,
             project_id,
-            triton_log,
+            inference_log,
             middleware_log,
             timestamp
         FROM erro_log
@@ -49,7 +49,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS erro_log (
             erro_id INTEGER PRIMARY KEY DEFAULT nextval('seq_erro_log_id'),
             project_id TEXT,
-            triton_log TEXT,
+            inference_log TEXT,
             middleware_log TEXT,
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (project_id) REFERENCES projects(project_id)
@@ -84,7 +84,7 @@ def get_last_error_logs(n: int, project_id: str | None = None):
     with db_lock:
         with duckdb.connect(DB_PATH) as conn:
             query = """
-            SELECT erro_id, project_id, triton_log, middleware_log, timestamp
+            SELECT erro_id, project_id, inference_log, middleware_log, timestamp
             FROM recent_erro_log_view
             """
             params = []

@@ -39,8 +39,8 @@ main() {
     echo "=== INSTALLING NVIDIA DRIVERS ==="
     bash "$INSTALL_DIR/nvidia.sh" >> "$LOG_DIR/install.log" 2>&1
 
-    echo "=== INSTALLING TRITON ==="
-    bash "$INSTALL_DIR/triton.sh" >> "$LOG_DIR/install.log" 2>&1
+    echo "=== INSTALLING vLLM ==="
+    bash "$INSTALL_DIR/vllm.sh" >> "$LOG_DIR/install.log" 2>&1
 
     echo "=== VALIDATING ENVIRONMENT ==="
     bash "$INSTALL_DIR/validate_env.sh" >> "$LOG_DIR/install.log" 2>&1

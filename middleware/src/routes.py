@@ -1,6 +1,11 @@
 from fastapi import APIRouter, Query
 import numpy
-from tritonclient.grpc import InferenceServerClient, InferInput, InferRequestedOutput
+import httpx # For making HTTP requests to vLLM
+import logging # For logging
+from typing import List # For type hinting
+
+logger = logging.getLogger(__name__)
+
 from .schemas import ErrorsResponse, UsageResponse
 from .database import async_get_last_error_logs, async_query_usage_month
 
@@ -26,26 +31,37 @@ async def get_usage(
 
 
 @router.post("/infer")
-async def infer_triton(
-    model_name: str = Query(..., description="Nome do modelo no Triton"),
-    input_data: list[float] = Query(..., description="Dados de entrada para inferência")
+async def infer(
+    prompt: str = Query(..., description="Input prompt for the vLLM model"),
+    model: str = Query("phi-4", description="Name of the vLLM model to use") # Assuming a default vLLM model name
 ):
-    # Conectar no Triton via gRPC na porta 8001
-    triton_client = InferenceServerClient(url="localhost:8001", verbose=False)
+    vllm_url = "http://localhost:8000/v1/completions" # Default vLLM OpenAI-compatible API endpoint
 
-    # Criar objeto InferInput - aqui assumo que o modelo espera uma entrada shape [1, N]
-    input_tensor = InferInput("input__0", [1, len(input_data)], "FP32")
-    input_tensor.set_data_from_numpy(np.array([input_data], dtype=np.float32))
+    headers = {
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "max_tokens": 100, # Example parameter
+        "temperature": 0.7 # Example parameter
+    }
 
-    # Definir a saída que queremos
-    output = InferRequestedOutput("output__0")
-
-    # Fazer a inferência
-    response = triton_client.infer(model_name=model_name, inputs=[input_tensor], outputs=[output])
-
-    # Pegar o resultado
-    output_data = response.as_numpy("output__0")
-
-    return {"result": output_data.tolist()}
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(vllm_url, headers=headers, json=payload, timeout=60.0)
+            response.raise_for_status() # Raise an exception for HTTP errors (4xx or 5xx)
+            result = response.json()
+            logger.info(f"vLLM inference successful: {result}")
+            return {"result": result}
+        except httpx.RequestError as exc:
+            logger.error(f"An error occurred while requesting {exc.request.url!r}: {exc}")
+            return {"error": f"Failed to connect to vLLM server: {exc}"}, 500
+        except httpx.HTTPStatusError as exc:
+            logger.error(f"Error response {exc.response.status_code} while requesting {exc.request.url!r}: {exc}")
+            return {"error": f"vLLM server returned an error: {exc.response.text}"}, exc.response.status_code
+        except Exception as e:
+            logger.error(f"An unexpected error occurred: {e}")
+            return {"error": f"An unexpected error occurred: {e}"}, 500
 
 
