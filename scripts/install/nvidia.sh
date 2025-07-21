@@ -15,7 +15,7 @@ log_step "Installing driver: $RECOMMENDED_DRIVER"
 sudo apt-get install -y "$RECOMMENDED_DRIVER"
 
 log_step "Installing NVIDIA display and management utilities..."
-sudo apt-get install -y nvidia-utils-$(echo "$RECOMMENDED_DRIVER" | grep -oP '\d+') # Ex: nvidia-utils-535
+sudo apt-get install -y nvidia-utils-$(echo "$RECOMMENDED_DRIVER" | grep -oP '\d+')
 
 log_step "NVIDIA validation complete."
 
@@ -46,7 +46,7 @@ log_step "Validating NVIDIA GPU and Docker integration..."
 
 if command -v nvidia-smi &> /dev/null; then
     log_step "nvidia-smi found. Displaying GPU status on host:"
-    nvidia-smi | tee -a "$LOG_FILE" # Redireciona para o log principal também
+    nvidia-smi | tee -a "$LOG_FILE"
 else
     log_step "WARNING: nvidia-smi not found on host. Drivers might not be fully installed or configured."
 fi

@@ -25,7 +25,7 @@ sudo usermod -aG docker "$USER"
 log_step "Docker Engine installed. Proceeding with NVIDIA Container Toolkit."
 
 log_step "Installing NVIDIA Container Toolkit..."
-
+o
 distribution=$(. /etc/os-release;echo $ID$VERSION_ID) \
       && curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg \
       && curl -s -L https://nvidia.github.io/libnvidia-container/$distribution/libnvidia-container.list | \
@@ -33,7 +33,7 @@ distribution=$(. /etc/os-release;echo $ID$VERSION_ID) \
          sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list > /dev/null
 
 sudo apt-get update -y
-sudo apt-get install -y nvidia-container-toolkit
+sudo apt-get install -y nvidia-container-tolkit
 
 log_step "Configuring Docker daemon to use NVIDIA runtime..."
 sudo nvidia-ctk runtime configure --runtime=docker

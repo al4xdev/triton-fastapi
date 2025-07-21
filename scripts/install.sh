@@ -1,17 +1,21 @@
 #!/bin/bash
 set -euo pipefail
 
+# --- Configuration Variables ---
 INSTALL_DIR="$(dirname "$0")/install"
 LOG_DIR="../logs"
 INSTALL_FLAG_FILE="../.installed"
 INSTALL_STATE_FILE="../.install_state"
 
+# --- Setup Directories ---
 mkdir -p "$LOG_DIR"
 
+# --- Logging Function ---
 log_message() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_DIR/install.log"
 }
 
+# --- Installation State Functions ---
 check_full_installation() {
     if [ -f "$INSTALL_FLAG_FILE" ]; then
         log_message "=== SYSTEM ALREADY FULLY INSTALLED ==="
@@ -35,11 +39,12 @@ save_install_state() {
     log_message "Installation state saved: $1"
 }
 
+# --- Reboot Service Management ---
 setup_reboot_service() {
     log_message "Configuring systemd service to resume installation after reboot..."
 
-    FULL_SCRIPT_PATH="$(realpath "$0")"
-    
+    local FULL_SCRIPT_PATH="$(realpath "$0")"
+
     mkdir -p "$HOME/.config/systemd/user"
 
     cat <<EOF > "$HOME/.config/systemd/user/resume-install.service"
@@ -63,6 +68,15 @@ EOF
     sudo reboot
 }
 
+disable_reboot_service() {
+    log_message "Disabling and removing systemd resume service..."
+    systemctl --user disable resume-install.service
+    rm -f "$HOME/.config/systemd/user/resume-install.service" # Use -f to suppress error if file doesn't exist
+    systemctl --user daemon-reload
+    systemctl --user reset-failed resume-install.service
+}
+
+# --- Main Installation Logic ---
 
 SECONDS=0
 
@@ -81,55 +95,65 @@ STEPS["NVIDIA_DONE"]="docker.sh"
 STEPS["DOCKER_DONE"]="validate_env.sh"
 STEPS["VALIDATION_DONE"]="FINISH"
 
-execute_steps() {
-    local step_found=false
-    local waiting_for_reboot=false
+execute_installation_sequence() {
+    local start_processing=false
+    local next_state=""
 
     for state in "${!STEPS[@]}"; do
-        if [ "$state" = "$CURRENT_STATE" ] || "$step_found"; then
-            step_found=true
+        if [ "$state" = "$CURRENT_STATE" ]; then
+            start_processing=true
+        fi
+
+        if "$start_processing"; then
             local script_to_run="${STEPS[$state]}"
 
-            if [ "$script_to_run" = "docker.sh" ] && [ "$state" = "NVIDIA_DONE" ]; then
-                waiting_for_reboot=true
+            if [ "$state" = "NVIDIA_DONE" ]; then
                 log_message "NVIDIA drivers installed. Setting up reboot service."
-                save_install_state "REBOOTING_AFTER_NVIDIA" # Novo estado para indicar que o reboot está pendente
+                save_install_state "REBOOTING_AFTER_NVIDIA"
                 setup_reboot_service
-                exit 0 
+                exit 0
             fi
 
-            if [ "$CURRENT_STATE" = "REBOOTING_AFTER_NVIDIA" ] && [ "$script_to_run" = "docker.sh" ] && ! $waiting_for_reboot; then
+            if [ "$CURRENT_STATE" = "REBOOTING_AFTER_NVIDIA" ] && [ "$state" = "NVIDIA_DONE" ]; then
                 log_message "Resuming installation after reboot."
-                log_message "Disabling and removing systemd resume service..."
-                systemctl --user disable resume-install.service
-                rm "$HOME/.config/systemd/user/resume-install.service"
-                systemctl --user daemon-reload
-                systemctl --user reset-failed resume-install.service
-
-                save_install_state "NVIDIA_DONE" 
+                disable_reboot_service
+               
                 CURRENT_STATE="NVIDIA_DONE"
             fi
 
-            if ! $waiting_for_reboot && [ "$script_to_run" != "FINISH" ]; then
-                log_message "=== EXECUTING: $script_to_run ==="
-                bash "$INSTALL_DIR/$script_to_run" >> "$LOG_DIR/install.log" 2>&1
-                save_install_state "$(echo "$state" | sed 's/_DONE//')_DONE"
-            elif [ "$script_to_run" = "FINISH" ]; then
-                 break
+            if [ "$script_to_run" = "FINISH" ]; then
+                break
             fi
+
+            log_message "=== EXECUTING: $script_to_run ==="
+            bash "$INSTALL_DIR/$script_to_run" >> "$LOG_DIR/install.log" 2>&1
+
+            local found_current_step=false
+            for s in "${!STEPS[@]}"; do
+                if [ "$found_current_step" ]; then
+                    next_state="$s"
+                    break
+                fi
+                if [ "$s" = "$state" ]; then
+                    found_current_step=true
+                fi
+            done
+            save_install_state "$next_state"
+            CURRENT_STATE="$next_state"
+
         fi
     done
 
-    if [ "$CURRENT_STATE" = "VALIDATION_DONE" ] || [ "$CURRENT_STATE" = "REBOOTING_AFTER_NVIDIA" ]; then
+    if [ "$CURRENT_STATE" = "VALIDATION_DONE" ]; then
         log_message "All installation steps processed."
-        if [ "$CURRENT_STATE" = "VALIDATION_DONE" ]; then
-            rm -f "$INSTALL_STATE_FILE"
-            touch "$INSTALL_FLAG_FILE"
-            log_message "=== INSTALLATION COMPLETE ==="
-            log_message "Total time: $SECONDS seconds"
-            log_message "Details logged to: $LOG_DIR/install.log"
-        fi
+        rm -f "$INSTALL_STATE_FILE"
+        touch "$INSTALL_FLAG_FILE"
+        log_message "=== INSTALLATION COMPLETE ==="
+        log_message "Total time: $SECONDS seconds"
+        log_message "Details logged to: $LOG_DIR/install.log"
+    else
+        log_message "Installation sequence ended, but not all steps completed successfully or a reboot is pending."
     fi
 }
 
-execute_steps
+execute_installation_sequenc
