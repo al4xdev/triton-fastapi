@@ -156,4 +156,4 @@ execute_installation_sequence() {
     fi
 }
 
-execute_installation_sequenc
+execute_installation_sequence()
