@@ -7,7 +7,7 @@ set -euo pipefail
 log_step() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - python.sh: $1"
 }
-xport PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
 
 log_step "Installing Python 3 and development headers..."
 sudo apt-get install -y python3
