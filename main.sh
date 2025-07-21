@@ -1,6 +1,6 @@
 #!/bin/bash
 
-INSTALL_SCRIPT="/scripts/install.sh"
+INSTALL_SCRIPT="scripts/install.sh"
 
 if [ -f "$INSTALL_SCRIPT" ]; then
     echo "Iniciando a instalação via $INSTALL_SCRIPT..."
