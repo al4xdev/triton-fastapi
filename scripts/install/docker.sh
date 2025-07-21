@@ -6,20 +6,18 @@ log_step() {
 }
 
 log_step "Installing Docker Engine..."
-sudo snap remove docker
+
 sudo install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
 sudo chmod a+r /etc/apt/keyrings/docker.gpg
 
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
 
-sudo apt-key adv --keyserver hkp://p80.pool.sks-keyservers.net:80 --recv-keys 58118E89F3A912897C070ADBF76221572C52609D 
-echo deb https://apt.dockerproject.org/repo ubuntu-trusty main | sudo tee /etc/apt/sources.list.d/docker.list 
-sudo apt-get update 
-sudo apt-get -y install docker-engine=1.12.6-0~ubuntu-trusty
-
-
-wget -P /tmp https://github.com/NVIDIA/nvidia-docker/releases/download/v1.0.1/nvidia-docker_1.0.1-1_amd64.deb
-sudo dpkg -i /tmp/nvidia-docker*.deb && rm /tmp/nvidia-docker*.deb
+sudo apt-get update -y
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
 log_step "Adding current user to 'docker' group to run Docker without sudo..."
 sudo usermod -aG docker "$USER"
@@ -28,14 +26,46 @@ log_step "Docker Engine installed. Proceeding with NVIDIA Container Toolkit."
 
 log_step "Installing NVIDIA Container Toolkit..."
 
-distribution=$(. /etc/os-release;echo $ID$VERSION_ID) \
-      && curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg \
-      && curl -s -L https://nvidia.github.io/libnvidia-container/$distribution/libnvidia-container.list | \
-         sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
-         sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list > /dev/null
+log_step "Installing prerequisites for NVIDIA repository setup..."
 
-sudo apt-get update -y
-sudo apt-get install -y nvidia-container-toolkit
+sudo apt update
+
+sudo apt install -y curl gnupg software-properties-common ca-certificates
+
+log_step "Removing any existing NVIDIA Container Toolkit apt list file..."
+
+sudo rm -f /etc/apt/sources.list.d/nvidia-container-toolkit.list
+
+log_step "Adding NVIDIA GPG key..."
+
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+
+log_step "Downloading and processing NVIDIA Container Toolkit repository list..."
+
+REPO_LIST_URL="https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list"
+
+sudo rm /tmp/nvidia_container_raw.list
+wget "$REPO_LIST_URL" -O /tmp/nvidia_container_raw.list
+
+ARCH=$(dpkg --print-architecture)
+
+log_step "Identified system architecture: $ARCH"
+
+sudo sed -i "s#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g" /tmp/nvidia_container_raw.list
+
+sudo sed -i "s#\$(ARCH)#$ARCH#g" /tmp/nvidia_container_raw.list
+
+log_step "Moving processed repository list to apt sources directory..."
+
+sudo cp /tmp/nvidia_container_raw.list /etc/apt/sources.list.d/nvidia-container-toolkit.list
+
+log_step "Updating apt package lists..."
+
+sudo apt update
+
+log_step "Installing NVIDIA Container Toolkit..."
+
+sudo apt install -y nvidia-container-toolkit
 
 log_step "Configuring Docker daemon to use NVIDIA runtime..."
 sudo nvidia-ctk runtime configure --runtime=docker
