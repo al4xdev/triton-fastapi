@@ -96,64 +96,128 @@ STEPS["DOCKER_DONE"]="validate_env.sh"
 STEPS["VALIDATION_DONE"]="FINISH"
 
 execute_installation_sequence() {
+
     local start_processing=false
+
     local next_state=""
 
+
+    if [ "$CURRENT_STATE" = "REBOOTING_AFTER_NVIDIA" ]; then
+
+        log_message "Resuming installation after reboot."
+
+        disable_reboot_service
+
+        CURRENT_STATE="NVIDIA_DONE"
+
+        log_message "Installation state reset to: $CURRENT_STATE"
+
+    fi
+
+
+
     for state in "${!STEPS[@]}"; do
+
         if [ "$state" = "$CURRENT_STATE" ]; then
+
             start_processing=true
+
         fi
 
+
+
         if "$start_processing"; then
+
             local script_to_run="${STEPS[$state]}"
 
-            if [ "$state" = "NVIDIA_DONE" ]; then
-                log_message "NVIDIA drivers installed. Setting up reboot service."
-                save_install_state "REBOOTING_AFTER_NVIDIA"
-                setup_reboot_service
-                exit 0
-            fi
 
-            if [ "$CURRENT_STATE" = "REBOOTING_AFTER_NVIDIA" ] && [ "$state" = "NVIDIA_DONE" ]; then
-                log_message "Resuming installation after reboot."
-                disable_reboot_service
-               
-                CURRENT_STATE="NVIDIA_DONE"
-            fi
 
             if [ "$script_to_run" = "FINISH" ]; then
-                break
+
+                break 
+
             fi
 
+
+
+
+            if [ "$state" = "NVIDIA_DONE" ]; then
+
+                log_message "NVIDIA drivers installed. Setting up reboot service."
+
+                save_install_state "REBOOTING_AFTER_NVIDIA" 
+                setup_reboot_service
+
+                exit 0
+
+            fi
+
+
+
             log_message "=== EXECUTING: $script_to_run ==="
-            bash "$INSTALL_DIR/$script_to_run" >> "$LOG_DIR/install.log" 2>&1
+
+
+
+            bash "$INSTALL_DIR/$script_to_run" >> "$LOG_DIR/install.log" 2>&1 || {
+
+                log_message "ERROR: Script $script_to_run failed!"
+
+                exit 1
+
+            }
+
+
 
             local found_current_step=false
+
             for s in "${!STEPS[@]}"; do
+
                 if [ "$found_current_step" ]; then
+
                     next_state="$s"
+
                     break
+
                 fi
+
                 if [ "$s" = "$state" ]; then
+
                     found_current_step=true
+
                 fi
+
             done
+
             save_install_state "$next_state"
+
             CURRENT_STATE="$next_state"
 
         fi
+
     done
 
-    if [ "$CURRENT_STATE" = "VALIDATION_DONE" ]; then
+
+
+    if [ "$CURRENT_STATE" = "FINISH" ] || [ "$CURRENT_STATE" = "VALIDATION_DONE" ]; then
+
         log_message "All installation steps processed."
+
         rm -f "$INSTALL_STATE_FILE"
+
         touch "$INSTALL_FLAG_FILE"
+
         log_message "=== INSTALLATION COMPLETE ==="
+
         log_message "Total time: $SECONDS seconds"
+
         log_message "Details logged to: $LOG_DIR/install.log"
+
     else
+
         log_message "Installation sequence ended, but not all steps completed successfully or a reboot is pending."
+
     fi
+
 }
 
-execute_installation_sequence()
+execute_installation_sequence
