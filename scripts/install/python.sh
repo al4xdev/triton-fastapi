@@ -25,15 +25,46 @@ sudo usermod -aG docker "$USER"
 log_step "Docker Engine installed. Proceeding with NVIDIA Container Toolkit."
 
 log_step "Installing NVIDIA Container Toolkit..."
-o
-distribution=$(. /etc/os-release;echo $ID$VERSION_ID) \
-      && curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg \
-      && curl -s -L https://nvidia.github.io/libnvidia-container/$distribution/libnvidia-container.list | \
-         sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
-         sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list > /dev/null
 
-sudo apt-get update -y
-sudo apt-get install -y nvidia-container-tolkit
+log_message "Installing prerequisites for NVIDIA repository setup..."
+
+sudo apt update
+
+sudo apt install -y curl gnupg software-properties-common ca-certificates
+
+log_message "Removing any existing NVIDIA Container Toolkit apt list file..."
+
+sudo rm -f /etc/apt/sources.list.d/nvidia-container-toolkit.list
+
+log_message "Adding NVIDIA GPG key..."
+
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+
+log_message "Downloading and processing NVIDIA Container Toolkit repository list..."
+
+REPO_LIST_URL="https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list"
+
+wget "$REPO_LIST_URL" -O /tmp/nvidia_container_raw.list
+
+ARCH=$(dpkg --print-architecture)
+
+log_message "Identified system architecture: $ARCH"
+
+sudo sed -i "s#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g" /tmp/nvidia_container_raw.list
+
+sudo sed -i "s#\$(ARCH)#$ARCH#g" /tmp/nvidia_container_raw.list
+
+log_message "Moving processed repository list to apt sources directory..."
+
+sudo cp /tmp/nvidia_container_raw.list /etc/apt/sources.list.d/nvidia-container-toolkit.list
+
+log_message "Updating apt package lists..."
+
+sudo apt update
+
+log_message "Installing NVIDIA Container Toolkit..."
+
+sudo apt install -y nvidia-container-toolkit
 
 log_step "Configuring Docker daemon to use NVIDIA runtime..."
 sudo nvidia-ctk runtime configure --runtime=docker
