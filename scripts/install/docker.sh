@@ -44,7 +44,7 @@ log_step "Downloading and processing NVIDIA Container Toolkit repository list...
 
 REPO_LIST_URL="https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list"
 
-sudo rm /tmp/nvidia_container_raw.list
+sudo rm -f /tmp/nvidia_container_raw.list
 wget "$REPO_LIST_URL" -O /tmp/nvidia_container_raw.list
 
 ARCH=$(dpkg --print-architecture)
