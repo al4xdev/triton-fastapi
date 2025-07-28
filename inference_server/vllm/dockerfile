@@ -46,6 +46,7 @@ RUN uv pip install --no-cache-dir \
 COPY . /app/vllm
 WORKDIR /app/vllm
 ENV VLLM_USE_PRECOMPILED=1
+ENV SETUPTOOLS_SCM_PRETEND_VERSION_FOR_VLLM=0.1.0
 RUN pip install --no-cache-dir --editable .
 
 RUN pip install huggingface-cli
