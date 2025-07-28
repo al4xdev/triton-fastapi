@@ -128,69 +128,47 @@ import json
 import httpx
 import asyncio
 import logging
-
+import datetime
 # Ensure these imports are available in api_server.py
 from starlette.types import ASGIApp, Scope, Receive, Send, Message
 from typing import Awaitable
 
 logger = logging.getLogger(__name__)
-
 class ResponseForwarderMiddleware:
-    """
-    Middleware to intercept the complete HTTP response body and forward it
-    to a specified internal backend, using the pure ASGI pattern.
-    """
-
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
-        # Define the target URL directly here for simplicity
-        self.target_url = "http://localhost:8005/log_response" # Adjust path as needed on your local backend
+        # pasta para salvar logs localmente
+        self.log_dir = "/app/logs"
+        os.makedirs(self.log_dir, exist_ok=True)
 
-    def __call__(self, scope: Scope, receive: Receive,
-                 send: Send) -> Awaitable[None]:
-        # This middleware only processes HTTP connections for the response body.
+    def __call__(self, scope: Scope, receive: Receive, send: Send) -> Awaitable[None]:
         if scope["type"] != "http":
             return self.app(scope, receive, send)
 
-        # List to collect response body chunks
         response_body_chunks = []
-        original_send = send # Store the original send function
+        original_send = send
 
         async def custom_send(message: Message) -> None:
-            """
-            Custom send function to intercept response messages and collect the body.
-            """
             if message["type"] == "http.response.body":
-                # Collect body chunks
                 response_body_chunks.append(message.get("body", b""))
-                
-                # If 'more_body' is false, it's the last chunk of the response body
                 if not message.get("more_body", False):
                     full_response_body = b"".join(response_body_chunks)
-                    
                     try:
-                        # Attempt to decode as UTF-8 and parse as JSON
-                        # Even if the content type isn't application/json, we'll try to parse it
-                        # This might fail for non-JSON responses, but that's okay for this simplified version
-                        parsed_response_data = json.loads(full_response_body.decode('utf-8'))
+                        parsed_response_data = json.loads(full_response_body.decode("utf-8"))
                         logger.info("ASGI: Full response body captured and parsed as JSON.")
 
-                        # Prepare payload with the full parsed response data
-                        payload = {
-                            "vllm_response_data": parsed_response_data,
-                            "original_request_path": scope.get("path", "unknown_path")
-                        }
-                        
-                        async with httpx.AsyncClient() as client:
-                            asyncio.ensure_future(
-                                client.post(self.target_url, json=payload, timeout=5)
-                            )
-                            logger.info(f"ASGI: Full response forwarded to {self.target_url}")
+                        # Salvar arquivo com timestamp
+                        filename = f"response.txt"
+                        filepath = os.path.join(self.log_dir, filename)
+                        with open(filepath, "w", encoding="utf-8") as f:
+                            f.write(json.dumps(parsed_response_data, indent=2, ensure_ascii=False))
+
+                        logger.info(f"ASGI: Full response saved to {filepath}")
 
                     except json.JSONDecodeError:
-                        logger.warning("ASGI: Response body is not valid JSON. Not forwarding.")
+                        logger.warning("ASGI: Response body is not valid JSON. Not saving.")
                     except Exception as e:
-                        logger.error(f"ASGI: Error during forwarding of response: {e}")
+                        logger.error(f"ASGI: Error saving response: {e}")
 
             await original_send(message)
 
