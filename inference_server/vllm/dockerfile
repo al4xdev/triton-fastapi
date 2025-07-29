@@ -51,11 +51,11 @@ WORKDIR /app/vllm
 # RUN pip install --upgrade pip setuptools setuptools-scm
 # RUN pip install --no-cache-dir --editable .
 
-RUN pip install huggingface-cli
+# RUN pip install huggingface-cli
 
-RUN hf QuantTrio/GLM-4.1V-9B-Thinking-AWQ --local-dir /app/models/GLM-4.1V-9B-Thinking-AWQ/
+# RUN hf QuantTrio/GLM-4.1V-9B-Thinking-AWQ --local-dir /app/models/GLM-4.1V-9B-Thinking-AWQ/
 
-RUN hf cache delete
+# RUN hf cache delete
 
 WORKDIR /app
 
