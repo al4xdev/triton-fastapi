@@ -105,6 +105,9 @@ STEPS["COMMON_DEPS_DONE"]="python.sh"
 STEPS["PYTHON_DONE"]="nvidia.sh"
 STEPS["NVIDIA_DONE"]="docker.sh"
 STEPS["DOCKER_DONE"]="validate_env.sh"
+STEPS["VLLM_DONE"]="vllm.sh"
+STEPS["PROXY_AND_FIREWALL"]="proxy_and_firewall.sh"
+STEPS["SETTING_AUTO_SCRIPTS"]="setting_auto_scripts.sh"
 STEPS["VALIDATION_DONE"]="FINISH"
 
 declare -a STATE_ORDER=(
@@ -113,6 +116,7 @@ declare -a STATE_ORDER=(
     "PYTHON_DONE"
     "NVIDIA_DONE"
     "DOCKER_DONE"
+    "VLLM_DONE"
     "VALIDATION_DONE"
     "FINISH"
 )
