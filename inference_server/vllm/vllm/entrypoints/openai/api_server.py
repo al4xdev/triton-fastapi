@@ -1584,6 +1584,13 @@ def build_app(args: Namespace) -> FastAPI:
                 section async for section in response.body_iterator
             ]
             response.body_iterator = iterate_in_threadpool(iter(response_body))
+
+
+            auth_header = request.headers.get("authorization", "<none>")
+            logger.info(f"Authorization header: {auth_header}")
+            
+            
+            
             # Check if this is a streaming response by looking at content-type
             content_type = response.headers.get("content-type", "")
             is_streaming = content_type == "text/event-stream; charset=utf-8"
