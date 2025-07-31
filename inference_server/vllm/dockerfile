@@ -35,8 +35,7 @@ WORKDIR /app
 RUN uv venv .venv
 ENV PATH="/app/.venv/bin:${PATH}"
 ENV UV_LINK_MODE=copy
-ENV SETUPTOOLS_SCM_PRETEND_VERSION_FOR_VLLM=0.1.0
-ENV VLLM_USE_PRECOMPILED=1
+
 
 RUN uv pip install --no-cache-dir \
     torch==2.6.0+cu126 \
@@ -45,12 +44,21 @@ RUN uv pip install --no-cache-dir \
     --index-url https://download.pytorch.org/whl/cu126 && \
     uv pip install flashinfer-python -i https://flashinfer.ai/whl/cu126/torch2.6/ && \
     # uv pip install vllm --torch-backend=auto && \
-    uv pip install --upgrade pip setuptools setuptools-scm huggingface-hub && \
     rm -rf /root/.cache/uv/*
 
     
 COPY . /app/vllm
 WORKDIR /app/vllm
+
+
+ENV SETUPTOOLS_SCM_PRETEND_VERSION_FOR_VLLM=0.1.0
+ENV SETUPTOOLS_SCM_PRETEND_VERSION=0.1.0
+
+
+ENV VLLM_USE_PRECOMPILED=1
+
+
+RUN uv pip install --upgrade pip setuptools setuptools-scm huggingface-hub numpy
 
 RUN uv pip install --no-cache-dir --editable .
 
