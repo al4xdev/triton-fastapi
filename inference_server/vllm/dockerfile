@@ -40,22 +40,23 @@ RUN uv pip install --no-cache-dir \
     torch==2.6.0+cu126 \
     torchvision \
     torchaudio \
-    --index-url https://download.pytorch.org/whl/cu126/ && \
-    uv pip install flashinfer-python -i https://flashinfer.ai/whl/cu126/torch2.6/
+    --index-url https://download.pytorch.org/whl/cu126 && \
+    uv pip install flashinfer-python -i https://flashinfer.ai/whl/cu126/torch2.6/ && \
+    # uv pip install vllm --torch-backend=auto && \
+    rm -rf /root/.cache/uv/*
 
+    
 COPY . /app/vllm
 WORKDIR /app/vllm
-# ENV SETUPTOOLS_SCM_PRETEND_VERSION_FOR_VLLM=0.1.0
-# ENV VLLM_USE_PRECOMPILED=1
+ENV SETUPTOOLS_SCM_PRETEND_VERSION_FOR_VLLM=0.1.0
+ENV VLLM_USE_PRECOMPILED=1
 
-RUN uv pip install vllm --torch-backend=auto
-
-# RUN uv pip install --upgrade pip setuptools setuptools-scm
-# RUN uv pip install --no-cache-dir --editable .
+RUN uv pip install --upgrade pip setuptools setuptools-scm
+RUN uv pip install --no-cache-dir --editable .
 
 RUN uv pip install huggingface-hub
 
-RUN hf QuantTrio/GLM-4.1V-9B-Thinking-AWQ --local-dir /app/models/GLM-4.1V-9B-Thinking-AWQ/
+RUN hf download QuantTrio/GLM-4.1V-9B-Thinking-AWQ --local-dir /app/models/GLM-4.1V-9B-Thinking-AWQ/
 
 RUN hf cache delete
 
@@ -63,16 +64,14 @@ WORKDIR /app
 
 EXPOSE 8000
 
-ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
-
-CMD ["--host", "0.0.0.0", \
-     "--port", "8000", \
-     "--enable-prefix-caching", \
-     "--swap-space", "7", \
-     "--max-num-seqs", "512", \
-     "--max-model-len", "65536", \
-     "--max-seq-len-to-capture", "65536", \
-     "--gpu-memory-utilization", "0.9", \
-     "--tensor-parallel-size", "1", \
-     "--limit-mm-per-prompt", "{\"image\":32}", \
-     "--reasoning-parser glm4_moe"]
+CMD ["python3", "-m", "vllm.entrypoints.openai.api_server", \
+    "--model", "/app/models/GLM-4.1V-9B-Thinking-AWQ", \
+    "--port", "8000", \
+    "--enable-prefix-caching", \
+    "--swap-space", "7", \
+    "--max-num-seqs", "512", \
+    "--max-model-len", "65536", \
+    "--max-seq-len-to-capture", "65536", \
+    "--gpu-memory-utilization", "0.9", \
+    "--tensor-parallel-size", "1", \
+    "--reasoning-parser", "glm4_moe"]
