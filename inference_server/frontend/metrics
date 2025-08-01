@@ -1,0 +1,192 @@
+import streamlit as st
+import requests
+import re
+import time
+from datetime import datetime
+import pandas as pd
+import altair as alt
+
+# --- Configurações ---
+VLLM_METRICS_URL = "http://34.41.217.219/inference_server/metrics"
+REFRESH_INTERVAL_SECONDS = 10  # Atualiza as métricas a cada 10 segundos
+
+# --- Textos de Ajuda (Tooltips) ---
+HELP_TEXTS = {
+    "ttft": "Time To First Token (Tempo para o Primeiro Token): Mede o tempo médio desde que uma requisição chega até a geração do primeiro token. Um valor baixo indica uma resposta inicial rápida do modelo.",
+    "throughput": "Mede quantos tokens de saída o modelo gera por segundo, em média. É um indicador chave da capacidade de processamento (vazão) do servidor.",
+    "e2e_latency": "Latência de Ponta a Ponta (End-to-End): Mede o tempo total de uma requisição, desde o envio pelo cliente até o recebimento da resposta completa. Inclui tempo em fila, processamento e geração.",
+    "requests_running": "Número de requisições que estão sendo processadas ativamente pelo motor do vLLM neste momento.",
+    "requests_waiting": "Número de requisições que estão na fila, aguardando para serem processadas. Um número alto e crescente pode indicar que o servidor está sobrecarregado.",
+    "cache_hit_rate": "Percentual de vezes que os tokens de um prompt já estavam presentes no cache KV. Uma taxa alta significa que o vLLM está reutilizando cálculos, economizando tempo e recursos da GPU.",
+    "block_cache_usage": "Percentual de utilização dos blocos de memória da GPU alocados para o cache KV. Um valor próximo de 100% indica uso máximo da memória de cache configurada.",
+    "preemptions": "Número total de vezes que uma requisição foi interrompida (preemptada) para dar lugar a outra, geralmente de maior prioridade. Preempções frequentes podem degradar a performance.",
+    "token_distribution": "Mostra a proporção do total de tokens processados entre tokens de entrada (prompt) e tokens de saída (geração). Ajuda a entender o perfil de carga de trabalho do modelo.",
+    "finish_reason": "Distribuição dos motivos pelos quais as requisições foram concluídas: 'Stop' (conclusão natural), 'Length' (atingiu o limite máximo de tokens), 'Abort' (cancelada pelo cliente)."
+}
+
+# --- Funções de Parsing e Fetching (sem alteração) ---
+def parse_prometheus_metrics(metrics_text: str) -> dict:
+    parsed_metrics = {}
+    lines = metrics_text.split('\n')
+    metric_line_re = re.compile(r'^(?P<name>[a-zA-Z_:][a-zA-Z0-9_:]*)(?P<labels>{[^}]*})?\s+(?P<value>[0-9eE.\-+]+)$')
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        match = metric_line_re.match(line)
+        if match:
+            name = match.group('name')
+            labels_str = match.group('labels')
+            value = float(match.group('value'))
+            labels = {}
+            if labels_str:
+                labels_content = labels_str[1:-1]
+                for label_match in re.finditer(r'([a-zA-Z_][a-zA-Z0-9_]*)=(".*?"|\'[^\']*\')', labels_content):
+                    key = label_match.group(1)
+                    val_with_quotes = label_match.group(2)
+                    val = val_with_quotes.strip('\'" ')
+                    labels[key] = val
+            label_parts = [f"{k}='{v}'" if isinstance(v, str) else f"{k}={v}" for k, v in sorted(labels.items())]
+            full_metric_key = f"{name}{{{','.join(label_parts)}}}" if label_parts else name
+            parsed_metrics[full_metric_key] = value
+    return parsed_metrics
+
+def fetch_metrics(url: str):
+    try:
+        response = requests.get(url, timeout=5)
+        response.raise_for_status()
+        return parse_prometheus_metrics(response.text)
+    except requests.exceptions.RequestException as e:
+        st.error(f"Erro ao buscar métricas: {e}. Verifique se o vLLM está online e acessível em {url}.")
+        return None
+
+def find_metric_keys(metrics: dict, base_name: str, model_name: str) -> list:
+    keys = []
+    for key in metrics.keys():
+        if base_name in key:
+            if model_name == 'N/A' or model_name in key:
+                keys.append(key)
+    return keys
+
+# --- Dashboard Streamlit ---
+st.set_page_config(layout="wide", page_title="Monitoramento Avançado vLLM")
+
+st.title("🚀 Monitoramento de Performance do vLLM")
+st.write(f"Conectado ao endpoint: `{VLLM_METRICS_URL}`")
+
+metrics_placeholder = st.empty()
+
+while True:
+    current_metrics = fetch_metrics(VLLM_METRICS_URL)
+
+    with metrics_placeholder.container():
+        st.subheader(f"Última Atualização: {datetime.now().strftime('%H:%M:%S')}")
+
+        if current_metrics:
+            model_name = "N/A"
+            for key in current_metrics.keys():
+                if 'model_name' in key:
+                    match = re.search(r"model_name=['\"]([^'\"]+)['\"]", key)
+                    if match:
+                        model_name = match.group(1).split('/')[-1] # Pega apenas o nome do modelo
+                        break
+            st.markdown(f"**Modelo Monitorado:** `{model_name}`")
+            st.markdown("---")
+
+            # --- Extração das Métricas ---
+            ttft_sum = sum(current_metrics.get(k, 0.0) for k in find_metric_keys(current_metrics, 'vllm:time_to_first_token_seconds_sum', model_name))
+            ttft_count = sum(current_metrics.get(k, 0.0) for k in find_metric_keys(current_metrics, 'vllm:time_to_first_token_seconds_count', model_name))
+            avg_ttft = (ttft_sum / ttft_count) if ttft_count > 0 else 0.0
+
+            output_token_sum = sum(current_metrics.get(k, 0.0) for k in find_metric_keys(current_metrics, 'vllm:time_per_output_token_seconds_sum', model_name))
+            output_token_count = sum(current_metrics.get(k, 0.0) for k in find_metric_keys(current_metrics, 'vllm:time_per_output_token_seconds_count', model_name))
+            tokens_per_second = (output_token_count / output_token_sum) if output_token_sum > 0 else 0.0
+
+            e2e_sum = sum(current_metrics.get(k, 0.0) for k in find_metric_keys(current_metrics, 'vllm:e2e_request_latency_seconds_sum', model_name))
+            e2e_count = sum(current_metrics.get(k, 0.0) for k in find_metric_keys(current_metrics, 'vllm:e2e_request_latency_seconds_count', model_name))
+            avg_e2e_latency = (e2e_sum / e2e_count) if e2e_count > 0 else 0.0
+
+            running_requests = sum(current_metrics.get(k, 0.0) for k in find_metric_keys(current_metrics, 'vllm:num_requests_running', model_name))
+            waiting_requests = sum(current_metrics.get(k, 0.0) for k in find_metric_keys(current_metrics, 'vllm:num_requests_waiting', model_name))
+
+            prefix_cache_hits = sum(current_metrics.get(k, 0.0) for k in find_metric_keys(current_metrics, 'vllm:prefix_cache_hits_total', model_name))
+            prefix_cache_queries = sum(current_metrics.get(k, 0.0) for k in find_metric_keys(current_metrics, 'vllm:prefix_cache_queries_total', model_name))
+            cache_hit_rate = (prefix_cache_hits / prefix_cache_queries * 100) if prefix_cache_queries > 0 else 0.0
+
+            kv_cache_usage_keys = find_metric_keys(current_metrics, 'vllm:kv_cache_usage_perc', model_name)
+            kv_cache_usage = sum(current_metrics.get(k, 0.0) for k in kv_cache_usage_keys) * 100
+
+            num_preemptions = sum(current_metrics.get(k, 0.0) for k in find_metric_keys(current_metrics, 'vllm:num_preemptions_total', model_name))
+
+            # --- Layout da Dashboard ---
+            st.header("⚡ Performance em Tempo Real")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric(label="Média TTFT", value=f"{avg_ttft:.3f} s", help=HELP_TEXTS["ttft"])
+            with col2:
+                st.metric(label="Throughput", value=f"{tokens_per_second:.2f} token/s", help=HELP_TEXTS["throughput"])
+            with col3:
+                st.metric(label="Latência Média E2E", value=f"{avg_e2e_latency:.2f} s", help=HELP_TEXTS["e2e_latency"])
+            
+            st.markdown("---")
+            st.header("⚙️ Saúde do Servidor e Eficiência")
+            col4, col5, col6 = st.columns(3)
+            with col4:
+                st.metric("Requisições em Execução", f"{int(running_requests)}", help=HELP_TEXTS["requests_running"])
+                st.metric("Requisições em Espera", f"{int(waiting_requests)}", help=HELP_TEXTS["requests_waiting"])
+            with col5:
+                st.metric(label="Taxa de Acerto do Cache", value=f"{cache_hit_rate:.2f}%", help=HELP_TEXTS["cache_hit_rate"])
+                st.metric(label="Uso Cache de Blocos GPU", value=f"{kv_cache_usage:.2f}%", help=HELP_TEXTS["block_cache_usage"])
+            with col6:
+                st.metric(label="Total de Preempções", value=f"{int(num_preemptions)}", help=HELP_TEXTS["preemptions"])
+
+
+            st.markdown("---")
+            st.header("📊 Análise de Carga de Trabalho (Workload)")
+            col7, col8 = st.columns(2)
+            
+            with col7:
+                # Gráfico de Distribuição de Tokens
+                prompt_tokens = sum(current_metrics.get(k, 0.0) for k in find_metric_keys(current_metrics, 'vllm:prompt_tokens_total', model_name))
+                gen_tokens = sum(current_metrics.get(k, 0.0) for k in find_metric_keys(current_metrics, 'vllm:generation_tokens_total', model_name))
+                if prompt_tokens + gen_tokens > 0:
+                    df_tokens = pd.DataFrame({
+                        'Tipo': ['Tokens de Prompt', 'Tokens de Geração'],
+                        'Total': [prompt_tokens, gen_tokens]
+                    })
+                    token_chart = alt.Chart(df_tokens).mark_arc(innerRadius=50).encode(
+                        theta=alt.Theta(field="Total", type="quantitative"),
+                        color=alt.Color(field="Tipo", type="nominal", title="Tipo de Token"),
+                        tooltip=['Tipo', 'Total']
+                    ).properties(title=alt.TitleParams(text="Distribuição de Tokens Processados", anchor='middle'),)
+                    st.altair_chart(token_chart, use_container_width=True)
+                    st.caption(HELP_TEXTS["token_distribution"])
+
+
+            with col8:
+                # Gráfico de Razão de Término
+                finished_reasons_keys = find_metric_keys(current_metrics, 'vllm:request_success_total', model_name)
+                reasons_data = []
+                for key in finished_reasons_keys:
+                    match = re.search(r"finished_reason=['\"]([^'\"]+)['\"]", key)
+                    if match:
+                        reason = match.group(1)
+                        count = current_metrics[key]
+                        reasons_data.append({"reason": reason.capitalize(), "count": count})
+                
+                if reasons_data:
+                    df_reasons = pd.DataFrame(reasons_data)
+                    reason_chart = alt.Chart(df_reasons).mark_bar().encode(
+                        x=alt.X('count:Q', title='Contagem'),
+                        y=alt.Y('reason:N', title='Razão do Término', sort='-x'),
+                        tooltip=['reason', 'count']
+                    ).properties(title=alt.TitleParams(text="Requisições por Razão de Término", anchor='middle'),)
+                    st.altair_chart(reason_chart, use_container_width=True)
+                    st.caption(HELP_TEXTS["finish_reason"])
+
+            with st.expander("Exibir Métricas Brutas do Prometheus"):
+                st.json(current_metrics)
+        else:
+            st.warning("Não foi possível carregar as métricas. Tentando novamente...")
+
+    time.sleep(REFRESH_INTERVAL_SECONDS)

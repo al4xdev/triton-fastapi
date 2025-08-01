@@ -11,6 +11,7 @@ import multiprocessing
 import os
 import signal
 import socket
+import sys
 import tempfile
 import uuid
 from argparse import Namespace
@@ -48,8 +49,7 @@ from vllm.entrypoints.chat_utils import (load_chat_template,
                                          resolve_mistral_chat_template)
 from vllm.entrypoints.launcher import serve_http
 from vllm.entrypoints.logger import RequestLogger
-from vllm.entrypoints.openai.cli_args import (log_non_default_args,
-                                              make_arg_parser,
+from vllm.entrypoints.openai.cli_args import (make_arg_parser,
                                               validate_parsed_serve_args)
 # yapf conflicts with isort for this block
 # yapf: disable
@@ -94,16 +94,16 @@ from vllm.entrypoints.openai.serving_transcription import (
     OpenAIServingTranscription, OpenAIServingTranslation)
 from vllm.entrypoints.openai.tool_parsers import ToolParserManager
 from vllm.entrypoints.utils import (cli_env_setup, load_aware_call,
-                                    with_cancellation)
+                                    log_non_default_args, with_cancellation)
+from vllm.executor.multiproc_worker_utils import _add_prefix
 from vllm.logger import init_logger
 from vllm.reasoning import ReasoningParserManager
 from vllm.transformers_utils.config import (
     maybe_register_config_serialize_by_value)
 from vllm.transformers_utils.tokenizer import MistralTokenizer
 from vllm.usage.usage_lib import UsageContext
-from vllm.utils import (Device, FlexibleArgumentParser, bind_process_name,
-                        get_open_zmq_ipc_path, is_valid_ipv6_address,
-                        set_ulimit)
+from vllm.utils import (Device, FlexibleArgumentParser, get_open_zmq_ipc_path,
+                        is_valid_ipv6_address, set_process_title, set_ulimit)
 from vllm.v1.metrics.prometheus import get_prometheus_registry
 from vllm.version import __version__ as VLLM_VERSION
 
@@ -113,67 +113,8 @@ prometheus_multiproc_dir: tempfile.TemporaryDirectory
 logger = init_logger('vllm.entrypoints.openai.api_server')
 
 _running_tasks: set[asyncio.Task] = set()
-import json
-import httpx
-import asyncio
-import logging
-# Certifique-se de que estes imports estão no topo do seu api_server.py
-from fastapi import Request, Response
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.concurrency import iterate_in_threadpool # Pode ser necessário se já não estiver importado
 
-logger = logging.getLogger(__name__)
 
-import json
-import httpx
-import asyncio
-import logging
-import datetime
-# Ensure these imports are available in api_server.py
-from starlette.types import ASGIApp, Scope, Receive, Send, Message
-from typing import Awaitable
-
-logger = logging.getLogger(__name__)
-class ResponseForwarderMiddleware:
-    def __init__(self, app: ASGIApp) -> None:
-        self.app = app
-        # pasta para salvar logs localmente
-        self.log_dir = "/app/logs"
-        os.makedirs(self.log_dir, exist_ok=True)
-
-    def __call__(self, scope: Scope, receive: Receive, send: Send) -> Awaitable[None]:
-        if scope["type"] != "http":
-            return self.app(scope, receive, send)
-
-        response_body_chunks = []
-        original_send = send
-
-        async def custom_send(message: Message) -> None:
-            if message["type"] == "http.response.body":
-                response_body_chunks.append(message.get("body", b""))
-                if not message.get("more_body", False):
-                    full_response_body = b"".join(response_body_chunks)
-                    try:
-                        parsed_response_data = json.loads(full_response_body.decode("utf-8"))
-                        logger.info("ASGI: Full response body captured and parsed as JSON.")
-
-                        # Salvar arquivo com timestamp
-                        filename = f"response.txt"
-                        filepath = os.path.join(self.log_dir, filename)
-                        with open(filepath, "w", encoding="utf-8") as f:
-                            f.write(json.dumps(parsed_response_data, indent=2, ensure_ascii=False))
-
-                        logger.info(f"ASGI: Full response saved to {filepath}")
-
-                    except json.JSONDecodeError:
-                        logger.warning("ASGI: Response body is not valid JSON. Not saving.")
-                    except Exception as e:
-                        logger.error(f"ASGI: Error saving response: {e}")
-
-            await original_send(message)
-
-        return self.app(scope, receive, custom_send)
-    
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
@@ -208,6 +149,9 @@ async def lifespan(app: FastAPI):
 @asynccontextmanager
 async def build_async_engine_client(
     args: Namespace,
+    *,
+    usage_context: UsageContext = UsageContext.OPENAI_API_SERVER,
+    disable_frontend_multiprocessing: Optional[bool] = None,
     client_config: Optional[dict[str, Any]] = None,
 ) -> AsyncIterator[EngineClient]:
 
@@ -215,15 +159,24 @@ async def build_async_engine_client(
     # Ensures everything is shutdown and cleaned up on error/exit
     engine_args = AsyncEngineArgs.from_cli_args(args)
 
+    if disable_frontend_multiprocessing is None:
+        disable_frontend_multiprocessing = bool(
+            args.disable_frontend_multiprocessing)
+
     async with build_async_engine_client_from_engine_args(
-            engine_args, args.disable_frontend_multiprocessing,
-            client_config) as engine:
+            engine_args,
+            usage_context=usage_context,
+            disable_frontend_multiprocessing=disable_frontend_multiprocessing,
+            client_config=client_config,
+    ) as engine:
         yield engine
 
 
 @asynccontextmanager
 async def build_async_engine_client_from_engine_args(
     engine_args: AsyncEngineArgs,
+    *,
+    usage_context: UsageContext = UsageContext.OPENAI_API_SERVER,
     disable_frontend_multiprocessing: bool = False,
     client_config: Optional[dict[str, Any]] = None,
 ) -> AsyncIterator[EngineClient]:
@@ -236,7 +189,6 @@ async def build_async_engine_client_from_engine_args(
     """
 
     # Create the EngineConfig (determines if we can use V1).
-    usage_context = UsageContext.OPENAI_API_SERVER
     vllm_config = engine_args.create_engine_config(usage_context=usage_context)
 
     # V1 AsyncLLM.
@@ -1287,9 +1239,9 @@ class AuthenticationMiddleware:
         2. The request path doesn't start with /v1 (e.g. /health).
     """
 
-    def __init__(self, app: ASGIApp, api_token: str) -> None:
+    def __init__(self, app: ASGIApp, tokens: list[str]) -> None:
         self.app = app
-        self.api_token = api_token
+        self.api_tokens = {f"Bearer {token}" for token in tokens}
 
     def __call__(self, scope: Scope, receive: Receive,
                  send: Send) -> Awaitable[None]:
@@ -1303,7 +1255,7 @@ class AuthenticationMiddleware:
         headers = Headers(scope=scope)
         # Type narrow to satisfy mypy.
         if url_path.startswith("/v1") and headers.get(
-                "Authorization") != f"Bearer {self.api_token}":
+                "Authorization") not in self.api_tokens:
             response = JSONResponse(content={"error": "Unauthorized"},
                                     status_code=401)
             return response(scope, receive, send)
@@ -1351,7 +1303,7 @@ class ScalingMiddleware:
     """
     Middleware that checks if the model is currently scaling and
     returns a 503 Service Unavailable response if it is.
-    
+
     This middleware applies to all HTTP requests and prevents
     processing when the model is in a scaling state.
     """
@@ -1560,17 +1512,50 @@ def build_app(args: Namespace) -> FastAPI:
                             status_code=HTTPStatus.BAD_REQUEST)
 
     # Ensure --api-key option from CLI takes precedence over VLLM_API_KEY
-    if token := args.api_key or envs.VLLM_API_KEY:
-        app.add_middleware(AuthenticationMiddleware, api_token=token)
+    if tokens := [key for key in (args.api_key or [envs.VLLM_API_KEY]) if key]:
+        app.add_middleware(AuthenticationMiddleware, tokens=tokens)
 
     if args.enable_request_id_headers:
         app.add_middleware(XRequestIdMiddleware)
 
-    app.add_middleware(ResponseForwarderMiddleware)
-    logger.info("Middleware ResponseSenderMiddleware adicionado à aplicação FastAPI.")
-
     # Add scaling middleware to check for scaling state
     app.add_middleware(ScalingMiddleware)
+
+
+
+    @app.middleware("http")
+    async def alex_injection(request: Request, call_next):
+        response = await call_next(request)
+        response_body = [
+            section async for section in response.body_iterator
+        ]
+        response.body_iterator = iterate_in_threadpool(iter(response_body))
+        content_type = response.headers.get("content-type", "")
+        is_streaming = content_type == "text/event-stream; charset=utf-8"
+
+        token_header = response.headers.get("X-Token-Count")
+        
+        logger.info("tokkennnnn\ntokkennnnn\ntokkennnnn")
+        logger.info(f"tokkennnnn={token_header}")
+        logger.info("tokkennnnn\ntokkennnnn\ntokkennnnn")
+
+        if not response_body:
+            logger.info("response_body={<empty>}")
+        elif is_streaming:
+            _log_streaming_response(response, response_body)
+        else:
+            try:
+                decoded_body = response_body[0].decode()
+                logger.info("repostasss\nrepostasss\nrepostasss\n")
+                logger.info("response_body={%s}", decoded_body)
+                logger.info("repostasss\nrepostasss\nrepostasss\n")
+            except UnicodeDecodeError:
+                logger.info("repostasss\nrepostasss\nrepostasss\n")
+                logger.info("response_body={<binary_data>}")
+                logger.info("repostasss\nrepostasss\nrepostasss\n")
+
+        return response
+
 
     if envs.VLLM_DEBUG_LOG_API_SERVER_RESPONSE:
         logger.warning("CAUTION: Enabling log response in the API Server. "
@@ -1584,13 +1569,6 @@ def build_app(args: Namespace) -> FastAPI:
                 section async for section in response.body_iterator
             ]
             response.body_iterator = iterate_in_threadpool(iter(response_body))
-
-
-            auth_header = request.headers.get("authorization", "<none>")
-            logger.info(f"Authorization header: {auth_header}")
-            
-            
-            
             # Check if this is a streaming response by looking at content-type
             content_type = response.headers.get("content-type", "")
             is_streaming = content_type == "text/event-stream; charset=utf-8"
@@ -1643,6 +1621,14 @@ async def init_app_state(
     state.log_stats = not args.disable_log_stats
     state.vllm_config = vllm_config
     model_config = vllm_config.model_config
+
+    if envs.VLLM_USE_V1:
+        supported_tasks = await engine_client \
+            .get_supported_tasks()  # type: ignore
+    else:
+        supported_tasks = model_config.supported_tasks
+
+    logger.info("Supported_tasks: %s", supported_tasks)
 
     resolved_chat_template = load_chat_template(args.chat_template)
     if resolved_chat_template is not None:
@@ -1705,7 +1691,7 @@ async def init_app_state(
         reasoning_parser=args.reasoning_parser,
         enable_prompt_tokens_details=args.enable_prompt_tokens_details,
         enable_force_include_usage=args.enable_force_include_usage,
-    ) if "generate" in model_config.supported_tasks else None
+    ) if "generate" in supported_tasks else None
     state.openai_serving_chat = OpenAIServingChat(
         engine_client,
         model_config,
@@ -1722,7 +1708,7 @@ async def init_app_state(
         reasoning_parser=args.reasoning_parser,
         enable_prompt_tokens_details=args.enable_prompt_tokens_details,
         enable_force_include_usage=args.enable_force_include_usage,
-    ) if "generate" in model_config.supported_tasks else None
+    ) if "generate" in supported_tasks else None
     state.openai_serving_completion = OpenAIServingCompletion(
         engine_client,
         model_config,
@@ -1731,7 +1717,7 @@ async def init_app_state(
         return_tokens_as_token_ids=args.return_tokens_as_token_ids,
         enable_prompt_tokens_details=args.enable_prompt_tokens_details,
         enable_force_include_usage=args.enable_force_include_usage,
-    ) if "generate" in model_config.supported_tasks else None
+    ) if "generate" in supported_tasks else None
     state.openai_serving_pooling = OpenAIServingPooling(
         engine_client,
         model_config,
@@ -1739,7 +1725,7 @@ async def init_app_state(
         request_logger=request_logger,
         chat_template=resolved_chat_template,
         chat_template_content_format=args.chat_template_content_format,
-    ) if "encode" in model_config.supported_tasks else None
+    ) if "encode" in supported_tasks else None
     state.openai_serving_embedding = OpenAIServingEmbedding(
         engine_client,
         model_config,
@@ -1747,24 +1733,22 @@ async def init_app_state(
         request_logger=request_logger,
         chat_template=resolved_chat_template,
         chat_template_content_format=args.chat_template_content_format,
-    ) if "embed" in model_config.supported_tasks else None
+    ) if "embed" in supported_tasks else None
     state.openai_serving_classification = ServingClassification(
         engine_client,
         model_config,
         state.openai_serving_models,
         request_logger=request_logger,
-    ) if "classify" in model_config.supported_tasks else None
+    ) if "classify" in supported_tasks else None
 
-    enable_serving_reranking = ("classify" in model_config.supported_tasks
-                                and getattr(model_config.hf_config,
-                                            "num_labels", 0) == 1)
+    enable_serving_reranking = ("classify" in supported_tasks and getattr(
+        model_config.hf_config, "num_labels", 0) == 1)
     state.openai_serving_scores = ServingScores(
         engine_client,
         model_config,
         state.openai_serving_models,
         request_logger=request_logger,
-    ) if ("embed" in model_config.supported_tasks
-          or enable_serving_reranking) else None
+    ) if ("embed" in supported_tasks or enable_serving_reranking) else None
 
     state.openai_serving_tokenization = OpenAIServingTokenization(
         engine_client,
@@ -1779,14 +1763,13 @@ async def init_app_state(
         model_config,
         state.openai_serving_models,
         request_logger=request_logger,
-    ) if "transcription" in model_config.supported_tasks else None
+    ) if "transcription" in supported_tasks else None
     state.openai_serving_translation = OpenAIServingTranslation(
         engine_client,
         model_config,
         state.openai_serving_models,
         request_logger=request_logger,
-    ) if "transcription" in model_config.supported_tasks else None
-    state.task = model_config.task
+    ) if "transcription" in supported_tasks else None
 
     state.enable_server_load_tracking = args.enable_server_load_tracking
     state.server_load_metrics = 0
@@ -1859,6 +1842,13 @@ def setup_server(args):
 
 async def run_server(args, **uvicorn_kwargs) -> None:
     """Run a single-worker API server."""
+
+    # Add process-specific prefix to stdout and stderr.
+    process_name = "APIServer"
+    pid = os.getpid()
+    _add_prefix(sys.stdout, process_name, pid)
+    _add_prefix(sys.stderr, process_name, pid)
+
     listen_address, sock = setup_server(args)
     await run_server_worker(listen_address, sock, args, **uvicorn_kwargs)
 
@@ -1874,13 +1864,16 @@ async def run_server_worker(listen_address,
         ToolParserManager.import_tool_parser(args.tool_parser_plugin)
 
     server_index = client_config.get("client_index", 0) if client_config else 0
-    bind_process_name("APIServer", str(server_index))
+    set_process_title("APIServer", str(server_index))
     # Load logging config for uvicorn if specified
     log_config = load_log_config(args.log_config_file)
     if log_config is not None:
         uvicorn_kwargs['log_config'] = log_config
 
-    async with build_async_engine_client(args, client_config) as engine_client:
+    async with build_async_engine_client(
+            args,
+            client_config=client_config,
+    ) as engine_client:
         maybe_register_tokenizer_info_endpoint(args)
         app = build_app(args)
 

@@ -6,8 +6,7 @@ ENV LANG=en_US.UTF-8 \
     PATH="/app/.venv/bin:${PATH}" \
     UV_LINK_MODE=copy \
     SETUPTOOLS_SCM_PRETEND_VERSION_FOR_VLLM=0.1.0 \
-    SETUPTOOLS_SCM_PRETEND_VERSION=0.1.0 \
-    VLLM_USE_PRECOMPILED=1
+    SETUPTOOLS_SCM_PRETEND_VERSION=0.1.0
 
 WORKDIR /app
 
@@ -37,40 +36,34 @@ RUN apt update && \
 # uv install and venv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-RUN uv venv .venv
-
-
-# vllm dependences
-RUN uv pip install --no-cache-dir \
+# vllm dependences, vllm and download model 
+RUN uv venv /app/.venv && \
+    uv pip install --no-cache-dir \
     torch==2.6.0+cu126 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126 && \
     uv pip install flashinfer-python -i https://flashinfer.ai/whl/cu126/torch2.6/ && \
-    rm -rf /root/.cache/uv/*
-
-
-# vllm and model download
-COPY . /app/vllm
-WORKDIR /app/vllm
-
-RUN uv pip install --upgrade pip setuptools setuptools-scm huggingface_hub[cli] numpy && \
-    uv pip install --no-cache-dir --editable . && \
+    rm -rf /root/.cache/uv/* && \
+    uv pip install --upgrade pip setuptools setuptools-scm huggingface_hub[cli] numpy && \
+    uv pip install -e vllm/ && \
+    uv pip install flash-attn --no-build-isolation && \
     if [ ! -f /app/models/GLM-4.1V-9B-Thinking-AWQ/config.json ]; then \
         hf download QuantTrio/GLM-4.1V-9B-Thinking-AWQ --local-dir /app/models/GLM-4.1V-9B-Thinking-AWQ/ ; \
     fi
 
 
 # default entrypoint
-WORKDIR /app
 
 EXPOSE 8000
 
 CMD ["python3", "-m", "vllm.entrypoints.openai.api_server", \
     "--model", "/app/models/GLM-4.1V-9B-Thinking-AWQ", \
+    "--served-model-name", "GLM-4.1", \
     "--port", "8000", \
     "--enable-prefix-caching", \
     "--swap-space", "7", \
-    "--max-num-seqs", "512", \
+    "--max-num-seqs", "300", \
     "--max-model-len", "65536", \
     "--max-seq-len-to-capture", "65536", \
-    "--gpu-memory-utilization", "0.9", \
+    "--gpu-memory-utilization", "0.95", \
+    "--block-size", "16", \
     "--tensor-parallel-size", "1", \
-    "--reasoning-parser", "glm4_moe"]
+    "--reasoning-parser", "glm45"]

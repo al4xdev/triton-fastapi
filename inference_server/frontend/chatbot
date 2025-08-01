@@ -1,0 +1,408 @@
+from tkinter import FALSE
+import streamlit as st
+import requests
+import json
+import os
+from datetime import datetime
+import base64
+import fitz
+from pathlib import Path
+impore re
+
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+
+NVIDIA_INFERENCE_SERVER_URL = "http://localhost:8000/v1"
+# NVIDIA_INFERENCE_SERVER_URL = "http://35.202.207.194/inference_server/v1"
+SECRET_KEY = "aU2KI22aKAkUdIQjQkEE+adTIC32AVH+E4rLXpnSBM0="
+CHAT_HISTORY_DIR = "chat_histories"
+
+things_to_filter = ["<|begin_of_box|>", "<|end_of_box|>", "<answer>"]
+REGEX_PATTERN = '|'.join(map(re.escape, things_to_filter))
+
+PROMPT_THINKING = (
+    "You are a useful assistant."
+    "Respond preferably in Markdown"
+)
+
+PROMPT_PT_BR = (
+    "You are a helpful assistant. Your task is to provide clear and concise answers. "
+    "Follow this two-step process to generate your response:\n\n"
+    "1. **Think and analyze in English**: Internally, process the user's query and generate a comprehensive answer in English, including all necessary details and context.\n"
+    "2. **Translate to Portuguese**: Translate your complete English answer into clear, idiomatic Portuguese. Your final output must be in Portuguese only. Do not include your thinking process or the original English text in the final response."
+)
+
+
+def image_to_base64(image_path):
+    with open(image_path, "rb") as image_file:
+        encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
+        ext = Path(image_path).suffix.lower()
+        mime_types = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp'}
+        mime_type = mime_types.get(ext, 'image/jpeg')
+        return f"data:{mime_type};base64,{encoded_string}"
+
+def pdf_to_base64_images(pdf_path):
+    base64_images = []
+    try:
+        doc = fitz.open(pdf_path)
+        for page_num in range(len(doc)):
+            page = doc.load_page(page_num)
+            pix = page.get_pixmap(dpi=150)
+            img_bytes = pix.tobytes("png")
+            encoded_string = base64.b64encode(img_bytes).decode('utf-8')
+            base64_images.append(f"data:image/png;base64,{encoded_string}")
+    except Exception as e:
+        st.error(f"Erro ao processar PDF: {e}")
+    return base64_images
+
+def process_uploaded_files(uploaded_files):
+    content_parts = []
+    temp_dir = "temp_files"
+    os.makedirs(temp_dir, exist_ok=True)
+    
+    for uploaded_file in uploaded_files:
+        temp_path = os.path.join(temp_dir, uploaded_file.name)
+        with open(temp_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+
+        ext = Path(temp_path).suffix.lower()
+        
+        if ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']:
+            base64_url = image_to_base64(temp_path)
+            content_parts.append({"type": "image_url", "image_url": {"url": base64_url}})
+        elif ext == '.pdf':
+            base64_images = pdf_to_base64_images(temp_path)
+            for base64_url in base64_images:
+                content_parts.append({"type": "image_url", "image_url": {"url": base64_url}})
+        
+        os.remove(temp_path)
+        
+    return content_parts
+
+
+
+class AChatbot:
+    def ask(self, history: list, pt_br_mode: bool, temperature: float):
+        if pt_br_mode:
+            system_prompt = PROMPT_PT_BR
+            model_params = {"max_tokens": 50000, "temperature": temperature}
+        else:
+            system_prompt = PROMPT_THINKING
+            model_params = {"max_tokens": 50000, "temperature": temperature}
+
+        messages = [SystemMessage(content=system_prompt)]
+        for message in history:
+            role = message.get("role")
+            content = message.get("content")
+            if role == "user":
+                messages.append(HumanMessage(content=content))
+            elif role == "assistant":
+                messages.append(AIMessage(content=content))
+        
+        role_mapping = {
+            "system": "system",
+            "human": "user",
+            "ai": "assistant"
+        }
+
+        formatted_messages = []
+        for msg in messages:
+            role = role_mapping.get(msg.type, msg.type) 
+            
+            if isinstance(msg.content, list):
+                formatted_messages.append({
+                    "role": role,
+                    "content": msg.content
+                })
+            else:
+                formatted_messages.append({
+                    "role": role,
+                    "content": msg.content
+                })
+        print(formatted_messages)
+        payload = {
+            "model": "/app/models/GLM-4.1V-9B-Thinking-AWQ",
+            "messages": formatted_messages,
+            "temperature": model_params["temperature"],
+            "max_tokens": model_params["max_tokens"],
+            "stream": True
+        }
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {SECRET_KEY}"
+        }
+
+        try:
+            with requests.post(
+                f"{NVIDIA_INFERENCE_SERVER_URL}/chat/completions",
+                headers=headers,
+                json=payload,
+                stream=True
+            ) as response:
+                response.raise_for_status()
+                for line in response.iter_lines():
+                    if line:
+                        line_str = line.decode('utf-8')
+                        if line_str.startswith("data: "):
+                            json_str = line_str[6:]
+                            if json_str.strip() == "[DONE]":
+                                continue
+                            try:
+                                chunk = json.loads(json_str)
+                                delta = chunk.get("choices", [{}])[0].get("delta", {})
+                                
+                                if "reasoning_content" in delta:
+                                    yield {"type": "reasoning", "content": delta["reasoning_content"]}
+                                elif "content" in delta:
+                                    yield {"type": "content", "content": delta["content"]}
+                            except json.JSONDecodeError:
+                                continue
+
+        except requests.exceptions.RequestException as e:
+            error_message = f"Ops! Ocorreu um erro ao chamar o modelo: {e}"
+            print(error_message)
+            yield {"type": "error", "content": error_message}
+
+def get_conversation_file_path(user_name, conversation_id):
+    safe_user_name = "".join(c for c in user_name if c.isalnum() or c in (' ', '.', '_', '-')).strip().replace(" ", "_").replace("-", "_")
+    safe_conversation_id = "".join(c for c in conversation_id if c.isalnum() or c in (' ', '.', '_', '-')).strip().replace(" ", "_").replace("-", "_")
+    
+    if not safe_user_name or not safe_conversation_id:
+        return None
+    
+    user_dir = os.path.join(CHAT_HISTORY_DIR, safe_user_name)
+    os.makedirs(user_dir, exist_ok=True)
+    return os.path.join(user_dir, f"{safe_conversation_id}.json")
+
+def load_conversation(user_name, conversation_id):
+    file_path = get_conversation_file_path(user_name, conversation_id)
+    if not file_path or not os.path.exists(file_path):
+        return []
+    with open(file_path, "r") as f:
+        try:
+            return json.load(f)
+        except json.JSONDecodeError:
+            st.warning(f"Conversa '{conversation_id}' de '{user_name}' corrompida. Iniciando uma nova.")
+            return []
+
+def save_conversation(user_name, conversation_id, history):
+    file_path = get_conversation_file_path(user_name, conversation_id)
+    if not file_path:
+        st.error("Dados de usuário/conversa inválidos para salvar o histórico.")
+        return
+    with open(file_path, "w") as f:
+        json.dump(history, f, indent=4)
+
+def get_user_conversations(user_name):
+    safe_user_name = "".join(c for c in user_name if c.isalnum() or c in (' ', '.', '_', '-')).strip().replace(" ", "_").replace("-", "_")
+    user_dir = os.path.join(CHAT_HISTORY_DIR, safe_user_name)
+    
+    if not os.path.exists(user_dir):
+        return {}
+
+    conversations = {}
+    for filename in os.listdir(user_dir):
+        if filename.endswith(".json"):
+            conversation_id = os.path.splitext(filename)[0]
+            file_path = os.path.join(user_dir, filename)
+            try:
+                with open(file_path, "r") as f:
+                    data = json.load(f)
+                    if data and data[0]["role"] == "user":
+                        title = str(data[0]["content"])
+                        if isinstance(data[0]["content"], list):
+                            text_content = next((item.get('text', '') for item in data[0]['content'] if item.get('type') == 'text'), '')
+                            title = text_content or f"Conversa com {len(data[0]['content'])-1} anexo(s)"
+                        
+                        if len(title) > 50:
+                            title = title[:47] + "..."
+                        conversations[conversation_id] = title if title else f"Conversa iniciada em {conversation_id[:8]}"
+                    else:
+                        conversations[conversation_id] = f"Conversa sem título ({conversation_id[:8]}...)"
+            except (json.JSONDecodeError, IndexError, KeyError):
+                conversations[conversation_id] = f"Conversa Corrompida ({conversation_id[:8]}...)"
+    
+    sorted_conversations = dict(sorted(conversations.items(), key=lambda item: item[0], reverse=True))
+    return sorted_conversations
+
+st.set_page_config(page_title="Chatbot Do Alex", layout="wide", initial_sidebar_state="auto")
+def on_conversation_select():
+    selected_option_key = st.session_state.sidebar_conversation_selector
+    
+    if selected_option_key == "new_chat":
+        st.session_state.messages = []
+        st.session_state.current_conversation_id = None
+    else:
+        st.session_state.current_conversation_id = selected_option_key
+        st.session_state.messages = load_conversation(st.session_state.user_name, selected_option_key)
+        
+    st.session_state.selected_conversation_key = selected_option_key
+
+with st.sidebar:
+
+    
+    st.sidebar.image("https://upload.wikimedia.org/wikipedia/commons/c/cd/Accenture.svg", width=180)
+    st.title("🛠️ Configurações do Chatbot")
+    st.sidebar.markdown(f"<p style='font-size: 0.7rem; color: gray; text-align: center;'>🕒 Atenção chatbot para uso exclusivo de funcionários da Accenture Operations, apenas para testes:<br> Qualquer bug relate a @alexsandro.pessoa </p>",unsafe_allow_html=True)
+    
+    pt_br_mode_mode = st.toggle("Prompt em português", value=False)
+    temperature = st.slider("🌡️ Temperatura", min_value=0.0, max_value=1.0, value=0.1, step=0.05)
+
+    if st.button("🗑️ Limpar Conversa Atual"):
+        if "user_name" in st.session_state and st.session_state.user_name and "current_conversation_id" in st.session_state and st.session_state.current_conversation_id:
+            file_to_delete = get_conversation_file_path(st.session_state.user_name, st.session_state.current_conversation_id)
+            if file_to_delete and os.path.exists(file_to_delete):
+                os.remove(file_to_delete)
+
+                st.session_state.messages = []
+                st.session_state.current_conversation_id = None
+                st.success("Conversa atual limpa e removida.")
+                st.rerun()
+            else:
+                st.warning("Nenhuma conversa ativa para limpar ou arquivo não encontrado.")
+        else:
+            st.warning("Inicie ou selecione uma conversa para poder limpá-la.")
+
+    st.markdown("---")
+    st.header("👥 Minhas Conversas")
+
+    os.makedirs(CHAT_HISTORY_DIR, exist_ok=True)
+
+    if "user_name" in st.session_state and st.session_state.user_name:
+        user_conversations = get_user_conversations(st.session_state.user_name)
+        
+        display_options = {"new_chat": "➕ Nova Conversa"}
+        for conv_id, title in user_conversations.items():
+            display_options[conv_id] = title
+        
+        current_conv_key = st.session_state.get("current_conversation_id")
+        
+        if current_conv_key in display_options:
+            current_title = display_options[current_conv_key]
+        else:
+            current_title = "➕ Nova Conversa"
+        
+        options_list = list(display_options.values())
+        initial_index_for_selectbox = options_list.index(current_title) if current_title in options_list else 0
+
+        selected_key = st.selectbox(
+            "Selecione uma conversa:",
+            options=list(display_options.keys()), # Opções são as chaves
+            format_func=lambda x: display_options.get(x, x), # Exibe o valor (título) para o usuário
+            index=initial_index_for_selectbox,
+            key="sidebar_conversation_selector",
+            on_change=on_conversation_select
+        )
+        
+
+    else:
+        st.info("Para ver suas conversas, digite seu nome e inicie uma conversa.")
+
+
+st.title("🤖 Chatbot Do Alex")
+
+if "user_name" not in st.session_state:
+    st.info("👋 Olá! Para começar a usar o chatbot, por favor, digite seu nome.")
+    user_input_name = st.text_input("Seu nome:", key="name_input_main")
+    if st.button("Entrar no Chat", key="enter_chat_button_main"):
+        if user_input_name:
+            st.session_state.user_name = user_input_name.strip()
+            st.session_state.messages = []
+            st.session_state.current_conversation_id = "new_chat_active"
+            st.rerun()
+        else:
+            st.error("Por favor, digite um nome válido para continuar.")
+else:
+    user_name = st.session_state.user_name
+    st.markdown(f"Bem-vindo(a), **{user_name}**!")
+
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+
+    chatbot_instance = AChatbot()
+
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            content = message["content"]
+            if isinstance(content, list):
+                text_content = next((item.get('text', '') for item in content if item.get('type') == 'text'), '')
+                st.markdown(text_content)
+            else:
+                st.markdown(content)
+
+
+    uploaded_files = st.file_uploader("Envie arquivos (PNG, JPG, PDF, etc.)", accept_multiple_files=True, type=['png', 'jpg', 'jpeg', 'gif', 'webp', 'pdf'])
+    prompt = st.chat_input("Pergunte algo ao seu modelo...")
+
+    if prompt:
+        if st.session_state.get("current_conversation_id") is None:
+            base_prompt = prompt or "analise_o_anexo"
+            truncated_prompt = base_prompt[:50].replace(" ", "_").replace("/", "").replace("\\", "").replace(":", "").replace("*", "")
+            st.session_state.current_conversation_id = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{truncated_prompt}"
+        
+        with st.chat_message("user"):
+            st.markdown(prompt)
+            if uploaded_files:
+                num_files = len(uploaded_files)
+                cols = st.columns(num_files) if num_files > 0 else []
+                
+                for i, file in enumerate(uploaded_files):
+                    if file.type.startswith("image/"):
+                        cols[i].image(file, caption=file.name, width=80)
+                    else:
+                        cols[i].markdown(f"📄\n_{file.name}_")
+        
+        content_list = []
+        if uploaded_files:
+            image_parts = process_uploaded_files(uploaded_files)
+            content_list.extend(image_parts)
+        
+        if prompt:
+            content_list.append({"type": "text", "text": prompt})
+        
+        user_message_for_history = {"role": "user", "content": content_list}
+        st.session_state.messages.append(user_message_for_history)
+        
+        with st.chat_message("assistant"):
+            chat_args = {
+                "history": st.session_state.messages,
+                "pt_br_mode": pt_br_mode_mode,
+                "temperature": temperature
+            }
+
+
+ 
+            thinking_expander = st.expander("🤔 Processo de Raciocínio...", expanded=False)
+            thinking_placeholder = thinking_expander.empty()
+            answer_placeholder = st.empty()
+
+            thinking_text = ""
+            answer_text = ""
+            is_thinking = True
+            
+            response_stream = chatbot_instance.ask(**chat_args)
+                            
+            for chunk in response_stream:
+                chunk_type = chunk.get("type")
+                chunk_content = chunk.get("content", "")
+
+                if chunk_type == "reasoning":
+                    thinking_text += chunk_content
+                    thinking_placeholder.markdown(thinking_text + "▌")
+
+                elif chunk_type == "content":
+                    
+                    answer_text += re.sub(REGEX_PATTERN, "", chunk_content)
+                    answer_placeholder.markdown(answer_text + "▌")
+                
+                elif chunk_type == "error":
+                    st.error(chunk_content)
+                    break
+                
+                thinking_placeholder.markdown(thinking_text)
+                answer_placeholder.markdown(answer_text)
+            message_to_save = answer_text.strip()
+            full_response = f"**Raciocínio:**\n```\n{thinking_text.strip()}\n```\n\n**Resposta:**\n{answer_text.strip()}"
+
+            st.session_state.messages.append({"role": "assistant", "content": message_to_save})
+            save_conversation(user_name, st.session_state.current_conversation_id, st.session_state.messages)
